@@ -1,5 +1,4 @@
 const fetch = require('node-fetch');
-const FormData = require('form-data');
 
 const TOKEN_TTL_MS = 45 * 60 * 1000; // 45 minutes
 
@@ -13,7 +12,6 @@ function isTokenFresh() {
 }
 
 function extractToken(data) {
-  // Walk common token field names recursively (1 level deep)
   const candidates = [
     data?.access_token,
     data?.token,
@@ -26,6 +24,8 @@ function extractToken(data) {
     data?.data?.authToken,
     data?.user?.token,
     data?.user?.access_token,
+    data?.tokenData?.access_token,
+    data?.tokenData?.token,
   ];
   return candidates.find(t => t && typeof t === 'string' && t.startsWith('eyJ')) || null;
 }
@@ -39,83 +39,35 @@ async function loginAndGetToken() {
     throw new Error('GHL_EMAIL or GHL_PASSWORD not set in environment');
   }
 
-  const commonHeaders = {
-    origin: `https://${domain}`,
-    referer: `https://${domain}/`,
-    version: '2021-07-28',
-  };
+  console.log('[tokenManager] Attempting login via backend.leadconnectorhq.com/oauth/2/login/email...');
 
-  const attempts = [];
+  const r = await fetch('https://backend.leadconnectorhq.com/oauth/2/login/email', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      origin: `https://${domain}`,
+      referer: `https://${domain}/`,
+      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    },
+    body: JSON.stringify({ email, password }),
+  });
 
-  // Attempt 1: smartfollowups multipart/form-data
-  try {
-    const form = new FormData();
-    form.append('email', email);
-    form.append('password', password);
-    const r = await fetch(`https://${domain}/api/v1/auth/login`, {
-      method: 'POST',
-      headers: { ...form.getHeaders(), ...commonHeaders },
-      body: form,
-    });
-    const data = await r.json().catch(() => ({}));
-    console.log(`[tokenManager] smartfollowups-multipart: ${r.status}`, JSON.stringify(data).slice(0, 200));
-    const token = extractToken(data);
-    if (token) return token;
-    attempts.push({ name: 'smartfollowups-multipart', status: r.status, data });
-  } catch (e) {
-    console.log('[tokenManager] smartfollowups-multipart failed:', e.message);
+  const data = await r.json().catch(() => ({}));
+  console.log(`[tokenManager] Login response ${r.status}:`, JSON.stringify(data).slice(0, 300));
+
+  if (!r.ok) {
+    throw new Error(`Login failed ${r.status}: ${JSON.stringify(data)}`);
   }
 
-  // Attempt 2: GHL identity service
-  try {
-    const r = await fetch('https://services.leadconnectorhq.com/oauth/user/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...commonHeaders },
-      body: JSON.stringify({ email, password, grant_type: 'password' }),
-    });
-    const data = await r.json().catch(() => ({}));
-    console.log(`[tokenManager] user-token: ${r.status}`, JSON.stringify(data).slice(0, 200));
-    const token = extractToken(data);
-    if (token) return token;
-    attempts.push({ name: 'user-token', status: r.status, data });
-  } catch (e) {
-    console.log('[tokenManager] user-token failed:', e.message);
+  const token = extractToken(data);
+  if (token) {
+    console.log('[tokenManager] Token extracted successfully');
+    return token;
   }
 
-  // Attempt 3: identity.gohighlevel.com
-  try {
-    const r = await fetch('https://identity.gohighlevel.com/api/v1/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...commonHeaders },
-      body: JSON.stringify({ email, password }),
-    });
-    const data = await r.json().catch(() => ({}));
-    console.log(`[tokenManager] identity-login: ${r.status}`, JSON.stringify(data).slice(0, 200));
-    const token = extractToken(data);
-    if (token) return token;
-    attempts.push({ name: 'identity-login', status: r.status, data });
-  } catch (e) {
-    console.log('[tokenManager] identity-login failed:', e.message);
-  }
-
-  // Attempt 4: backend.leadconnectorhq.com with JSON
-  try {
-    const r = await fetch('https://backend.leadconnectorhq.com/user/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...commonHeaders },
-      body: JSON.stringify({ email, password }),
-    });
-    const data = await r.json().catch(() => ({}));
-    console.log(`[tokenManager] backend-user-login: ${r.status}`, JSON.stringify(data).slice(0, 200));
-    const token = extractToken(data);
-    if (token) return token;
-    attempts.push({ name: 'backend-user-login', status: r.status, data });
-  } catch (e) {
-    console.log('[tokenManager] backend-user-login failed:', e.message);
-  }
-
-  console.error('[tokenManager] All attempts failed:', JSON.stringify(attempts));
-  throw new Error('All login endpoints failed — check Railway logs for details');
+  // Log full response so we can see exact structure
+  console.error('[tokenManager] Token not found in response. Full response:', JSON.stringify(data));
+  throw new Error('Login succeeded but no token found in response — check Railway logs for response structure');
 }
 
 async function getToken() {
