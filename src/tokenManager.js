@@ -1,4 +1,5 @@
 const fetch = require('node-fetch');
+const FormData = require('form-data');
 
 const TOKEN_TTL_MS = 45 * 60 * 1000; // 45 minutes
 
@@ -11,6 +12,24 @@ function isTokenFresh() {
   return cachedToken && tokenFetchedAt && (Date.now() - tokenFetchedAt < TOKEN_TTL_MS);
 }
 
+function extractToken(data) {
+  // Walk common token field names recursively (1 level deep)
+  const candidates = [
+    data?.access_token,
+    data?.token,
+    data?.authToken,
+    data?.idToken,
+    data?.id_token,
+    data?.jwt,
+    data?.data?.access_token,
+    data?.data?.token,
+    data?.data?.authToken,
+    data?.user?.token,
+    data?.user?.access_token,
+  ];
+  return candidates.find(t => t && typeof t === 'string' && t.startsWith('eyJ')) || null;
+}
+
 async function loginAndGetToken() {
   const email = process.env.GHL_EMAIL;
   const password = process.env.GHL_PASSWORD;
@@ -20,61 +39,83 @@ async function loginAndGetToken() {
     throw new Error('GHL_EMAIL or GHL_PASSWORD not set in environment');
   }
 
-  console.log('[tokenManager] Attempting API login...');
+  const commonHeaders = {
+    origin: `https://${domain}`,
+    referer: `https://${domain}/`,
+    version: '2021-07-28',
+  };
 
-  // Step 1: try the direct GHL auth API
-  const endpoints = [
-    {
-      url: 'https://services.leadconnectorhq.com/oauth/token',
-      body: { grant_type: 'password', email, password, client_id: 'app' },
-      tokenPath: 'access_token',
-    },
-    {
-      url: 'https://backend.leadconnectorhq.com/auth/login',
-      body: { email, password },
-      tokenPath: 'token',
-    },
-    {
-      url: `https://services.leadconnectorhq.com/oauth/user/login`,
-      body: { email, password },
-      tokenPath: 'access_token',
-    },
-  ];
+  const attempts = [];
 
-  for (const ep of endpoints) {
-    try {
-      console.log(`[tokenManager] Trying endpoint: ${ep.url}`);
-      const res = await fetch(ep.url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          version: '2021-07-28',
-          origin: `https://${domain}`,
-          referer: `https://${domain}/`,
-        },
-        body: JSON.stringify(ep.body),
-      });
-
-      const data = await res.json();
-      console.log(`[tokenManager] Response status: ${res.status}`);
-
-      // Walk the token path
-      const keys = ep.tokenPath.split('.');
-      let token = data;
-      for (const k of keys) token = token?.[k];
-
-      if (token && typeof token === 'string' && token.startsWith('eyJ')) {
-        console.log('[tokenManager] Token obtained via API login');
-        return token;
-      }
-
-      console.log(`[tokenManager] No token in response:`, JSON.stringify(data).slice(0, 200));
-    } catch (e) {
-      console.log(`[tokenManager] Endpoint failed: ${e.message}`);
-    }
+  // Attempt 1: smartfollowups multipart/form-data
+  try {
+    const form = new FormData();
+    form.append('email', email);
+    form.append('password', password);
+    const r = await fetch(`https://${domain}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { ...form.getHeaders(), ...commonHeaders },
+      body: form,
+    });
+    const data = await r.json().catch(() => ({}));
+    console.log(`[tokenManager] smartfollowups-multipart: ${r.status}`, JSON.stringify(data).slice(0, 200));
+    const token = extractToken(data);
+    if (token) return token;
+    attempts.push({ name: 'smartfollowups-multipart', status: r.status, data });
+  } catch (e) {
+    console.log('[tokenManager] smartfollowups-multipart failed:', e.message);
   }
 
-  throw new Error('All login endpoints failed — check GHL_EMAIL, GHL_PASSWORD, and GHL_DOMAIN');
+  // Attempt 2: GHL identity service
+  try {
+    const r = await fetch('https://services.leadconnectorhq.com/oauth/user/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...commonHeaders },
+      body: JSON.stringify({ email, password, grant_type: 'password' }),
+    });
+    const data = await r.json().catch(() => ({}));
+    console.log(`[tokenManager] user-token: ${r.status}`, JSON.stringify(data).slice(0, 200));
+    const token = extractToken(data);
+    if (token) return token;
+    attempts.push({ name: 'user-token', status: r.status, data });
+  } catch (e) {
+    console.log('[tokenManager] user-token failed:', e.message);
+  }
+
+  // Attempt 3: identity.gohighlevel.com
+  try {
+    const r = await fetch('https://identity.gohighlevel.com/api/v1/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...commonHeaders },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await r.json().catch(() => ({}));
+    console.log(`[tokenManager] identity-login: ${r.status}`, JSON.stringify(data).slice(0, 200));
+    const token = extractToken(data);
+    if (token) return token;
+    attempts.push({ name: 'identity-login', status: r.status, data });
+  } catch (e) {
+    console.log('[tokenManager] identity-login failed:', e.message);
+  }
+
+  // Attempt 4: backend.leadconnectorhq.com with JSON
+  try {
+    const r = await fetch('https://backend.leadconnectorhq.com/user/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...commonHeaders },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await r.json().catch(() => ({}));
+    console.log(`[tokenManager] backend-user-login: ${r.status}`, JSON.stringify(data).slice(0, 200));
+    const token = extractToken(data);
+    if (token) return token;
+    attempts.push({ name: 'backend-user-login', status: r.status, data });
+  } catch (e) {
+    console.log('[tokenManager] backend-user-login failed:', e.message);
+  }
+
+  console.error('[tokenManager] All attempts failed:', JSON.stringify(attempts));
+  throw new Error('All login endpoints failed — check Railway logs for details');
 }
 
 async function getToken() {
@@ -93,7 +134,6 @@ async function getToken() {
     cachedToken = token;
     tokenFetchedAt = Date.now();
     console.log('[tokenManager] Token refreshed successfully');
-
     refreshQueue.forEach(({ resolve }) => resolve(token));
     return token;
   } catch (err) {
@@ -115,7 +155,7 @@ function scheduleAutoRefresh() {
         console.error('[tokenManager] Auto-refresh failed:', e.message);
       }
     }
-  }, 10 * 60 * 1000); // check every 10 min
+  }, 10 * 60 * 1000);
 }
 
 module.exports = { getToken, scheduleAutoRefresh };
