@@ -1,0 +1,41 @@
+[build]
+builder = "NIXPACKS"
+
+[build.nixpacksPlan.phases.setup]
+nixPkgs = [
+  "chromium",
+  "nss",
+  "freetype",
+  "harfbuzz",
+  "ca-certificates",
+  "ttf-dejavu",
+  "liberation_ttf",
+  "fontconfig",
+  "dbus",
+  "expat",
+  "libX11",
+  "libXcomposite",
+  "libXdamage",
+  "libXext",
+  "libXfixes",
+  "libXrandr",
+  "libxcb",
+  "libxkbcommon",
+  "libgbm",
+  "alsa-lib",
+  "atk",
+  "cups",
+  "gtk3",
+  "pango",
+  "xorg.libXScrnSaver",
+  "xorg.libXtst"
+]
+
+[build.nixpacksPlan.phases.setup.environment]
+PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "true"
+PUPPETEER_EXECUTABLE_PATH = "/run/current-system/sw/bin/chromium"
+
+[deploy]
+startCommand = "npm start"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
