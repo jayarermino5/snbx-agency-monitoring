@@ -1,13 +1,8 @@
 const fetch = require('node-fetch');
+const { getToken } = require('./tokenManager');
 
 const BASE = 'https://services.leadconnectorhq.com';
 const COMPANY_ID = process.env.GHL_COMPANY_ID;
-
-function getToken() {
-  const token = process.env.GHL_BEARER_TOKEN;
-  if (!token) throw new Error('GHL_BEARER_TOKEN is not set in environment variables');
-  return token.trim();  // ← add .trim()
-}
 
 function getCompanyId() {
   if (!COMPANY_ID) throw new Error('GHL_COMPANY_ID is not set in environment variables');
@@ -15,7 +10,7 @@ function getCompanyId() {
 }
 
 async function ghlFetch(path) {
-  const token = getToken();
+  const token = await getToken();
   const url = `${BASE}${path}`;
   console.log(`[ghlFetch] GET ${url}`);
 
