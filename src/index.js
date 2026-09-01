@@ -4,6 +4,7 @@ const cors = require('cors');
 const { scheduleAutoRefresh } = require('./tokenManager');
 const walletRouter = require('./routes/wallet');
 const aiRouter = require('./routes/ai');
+const debugRouter = require('./routes/debug');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,6 +18,7 @@ app.get('/health', (req, res) => {
 
 app.use('/api/wallet', walletRouter);
 app.use('/api/ai', aiRouter);
+app.use('/api/debug', debugRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
