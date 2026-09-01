@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const { scheduleAutoRefresh } = require('./tokenManager');
 const walletRouter = require('./routes/wallet');
 const aiRouter = require('./routes/ai');
 
@@ -28,4 +29,5 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`SNBX Billing API running on port ${PORT}`);
+  scheduleAutoRefresh();
 });
