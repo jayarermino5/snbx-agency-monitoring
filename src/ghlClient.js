@@ -23,6 +23,7 @@ async function ghlFetch(path) {
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
+      version: '2021-07-28',
     },
   });
 
