@@ -6,7 +6,7 @@ const COMPANY_ID = process.env.GHL_COMPANY_ID;
 function getToken() {
   const token = process.env.GHL_BEARER_TOKEN;
   if (!token) throw new Error('GHL_BEARER_TOKEN is not set in environment variables');
-  return token;
+  return token.trim();  // ← add .trim()
 }
 
 function getCompanyId() {
