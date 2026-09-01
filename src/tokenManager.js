@@ -1,4 +1,4 @@
-const puppeteer = require('puppeteer');
+const fetch = require('node-fetch');
 
 const TOKEN_TTL_MS = 45 * 60 * 1000; // 45 minutes
 
@@ -14,74 +14,67 @@ function isTokenFresh() {
 async function loginAndGetToken() {
   const email = process.env.GHL_EMAIL;
   const password = process.env.GHL_PASSWORD;
-  if (!email || !password) throw new Error('GHL_EMAIL or GHL_PASSWORD not set in environment');
+  const domain = process.env.GHL_DOMAIN || 'app.gohighlevel.com';
 
-  console.log('[tokenManager] Launching Puppeteer...');
-
-  const browser = await puppeteer.launch({
-    headless: "new",
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--no-zygote',
-      '--single-process',
-    ],
-  });
-
-  try {
-    const page = await browser.newPage();
-
-    await page.setRequestInterception(true);
-    let capturedToken = null;
-
-    page.on('request', (req) => {
-      const auth = req.headers()['authorization'];
-      if (auth && auth.startsWith('Bearer ') && !capturedToken) {
-        const token = auth.replace('Bearer ', '').trim();
-        if (token.startsWith('eyJ')) {
-          capturedToken = token;
-          console.log('[tokenManager] Token captured from request headers');
-        }
-      }
-      req.continue();
-    });
-
-    console.log('[tokenManager] Navigating to GHL login...');
-    await page.goto('https://app.gohighlevel.com/', { waitUntil: 'networkidle2', timeout: 60000 });
-
-    await page.waitForSelector('input[type="email"], input[name="email"]', { timeout: 15000 });
-    await page.type('input[type="email"], input[name="email"]', email, { delay: 50 });
-    await page.type('input[type="password"], input[name="password"]', password, { delay: 50 });
-    await page.keyboard.press('Enter');
-
-    console.log('[tokenManager] Waiting for post-login navigation...');
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 });
-
-    // Wait a bit for XHR calls to fire and capture token
-    await new Promise(r => setTimeout(r, 5000));
-
-    // If we didn't capture from headers, try intercepting the billing page
-    if (!capturedToken) {
-      console.log('[tokenManager] Navigating to billing page to capture token...');
-      await page.goto(
-        'https://app.smartfollowups.com/settings/billing?tab=wallet_transactions&sub_tab=subs',
-        { waitUntil: 'networkidle2', timeout: 60000 }
-      );
-      await new Promise(r => setTimeout(r, 5000));
-    }
-
-    if (!capturedToken) {
-      throw new Error('Could not capture Bearer token from GHL session');
-    }
-
-    return capturedToken;
-  } finally {
-    await browser.close();
-    console.log('[tokenManager] Browser closed');
+  if (!email || !password) {
+    throw new Error('GHL_EMAIL or GHL_PASSWORD not set in environment');
   }
+
+  console.log('[tokenManager] Attempting API login...');
+
+  // Step 1: try the direct GHL auth API
+  const endpoints = [
+    {
+      url: 'https://services.leadconnectorhq.com/oauth/token',
+      body: { grant_type: 'password', email, password, client_id: 'app' },
+      tokenPath: 'access_token',
+    },
+    {
+      url: 'https://backend.leadconnectorhq.com/auth/login',
+      body: { email, password },
+      tokenPath: 'token',
+    },
+    {
+      url: `https://services.leadconnectorhq.com/oauth/user/login`,
+      body: { email, password },
+      tokenPath: 'access_token',
+    },
+  ];
+
+  for (const ep of endpoints) {
+    try {
+      console.log(`[tokenManager] Trying endpoint: ${ep.url}`);
+      const res = await fetch(ep.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          version: '2021-07-28',
+          origin: `https://${domain}`,
+          referer: `https://${domain}/`,
+        },
+        body: JSON.stringify(ep.body),
+      });
+
+      const data = await res.json();
+      console.log(`[tokenManager] Response status: ${res.status}`);
+
+      // Walk the token path
+      const keys = ep.tokenPath.split('.');
+      let token = data;
+      for (const k of keys) token = token?.[k];
+
+      if (token && typeof token === 'string' && token.startsWith('eyJ')) {
+        console.log('[tokenManager] Token obtained via API login');
+        return token;
+      }
+
+      console.log(`[tokenManager] No token in response:`, JSON.stringify(data).slice(0, 200));
+    } catch (e) {
+      console.log(`[tokenManager] Endpoint failed: ${e.message}`);
+    }
+  }
+
+  throw new Error('All login endpoints failed — check GHL_EMAIL, GHL_PASSWORD, and GHL_DOMAIN');
 }
 
 async function getToken() {
