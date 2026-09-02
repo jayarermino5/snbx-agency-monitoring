@@ -1,10 +1,9 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { scheduleAutoRefresh } = require('./tokenManager');
+const { initialize, scheduleAutoRefresh } = require('./tokenManager');
 const walletRouter = require('./routes/wallet');
 const aiRouter = require('./routes/ai');
-const debugRouter = require('./routes/debug');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -18,7 +17,6 @@ app.get('/health', (req, res) => {
 
 app.use('/api/wallet', walletRouter);
 app.use('/api/ai', aiRouter);
-app.use('/api/debug', debugRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
@@ -29,7 +27,8 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`SNBX Billing API running on port ${PORT}`);
+  await initialize();
   scheduleAutoRefresh();
 });
