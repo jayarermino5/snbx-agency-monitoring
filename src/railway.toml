@@ -1,6 +1,13 @@
 [build]
 builder = "NIXPACKS"
 
+[build.nixpacksPlan.phases.setup]
+nixPkgs = ["chromium", "nss", "freetype", "harfbuzz", "ca-certificates", "fontconfig", "dbus", "expat", "libX11", "libXcomposite", "libXdamage", "libXext", "libXfixes", "libXrandr", "libxcb", "libxkbcommon", "mesa", "alsa-lib", "atk", "cups", "gtk3", "pango", "xorg.libXScrnSaver", "xorg.libXtst", "xorg.libxshmfence"]
+
+[build.nixpacksPlan.phases.setup.environment]
+PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH = "/run/current-system/sw/bin/chromium"
+
 [deploy]
 startCommand = "npm start"
 restartPolicyType = "ON_FAILURE"
