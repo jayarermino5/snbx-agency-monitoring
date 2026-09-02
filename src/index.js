@@ -49,6 +49,17 @@ app.post('/api/refresh', async (req, res) => {
   }
 });
 
+app.get('/api/debug/screenshot', (req, res) => {
+  const fs = require('fs');
+  const path = '/tmp/login-page.png';
+  if (fs.existsSync(path)) {
+    res.setHeader('Content-Type', 'image/png');
+    fs.createReadStream(path).pipe(res);
+  } else {
+    res.status(404).json({ error: 'No screenshot yet' });
+  }
+});
+
 app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
 app.use((err, req, res, next) => {
   console.error(err);
