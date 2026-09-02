@@ -1,13 +1,8 @@
 const { chromium } = require('playwright');
 
-const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const CACHE_TTL_MS = 60 * 60 * 1000;
 
-let cache = {
-  wallet: null,
-  ai: null,
-  lastScraped: null,
-};
-
+let cache = { wallet: null, ai: null, lastScraped: null };
 let scraping = false;
 let scrapeQueue = [];
 
@@ -19,12 +14,10 @@ async function scrapeGHL() {
   const email = process.env.GHL_EMAIL;
   const password = process.env.GHL_PASSWORD;
   const domain = process.env.GHL_DOMAIN || 'app.smartfollowups.com';
-  const companyId = process.env.GHL_COMPANY_ID;
 
   if (!email || !password) throw new Error('GHL_EMAIL or GHL_PASSWORD not set');
 
   console.log('[scraper] Launching browser...');
-
   const browser = await chromium.launch({
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
@@ -35,7 +28,6 @@ async function scrapeGHL() {
   });
 
   const page = await context.newPage();
-
   let walletData = null;
   let aiData = null;
 
@@ -47,7 +39,7 @@ async function scrapeGHL() {
         if (json.success && json.data) {
           if (!walletData) walletData = { ...json, data: [] };
           walletData.data = walletData.data.concat(json.data);
-          console.log(`[scraper] Wallet data: ${walletData.data.length}/${json.locationsCount}`);
+          console.log(`[scraper] Wallet: ${walletData.data.length}/${json.locationsCount}`);
         }
       }
       if (url.includes('ai-wrapper/usage/company/locations')) {
@@ -55,100 +47,104 @@ async function scrapeGHL() {
         if (json.status === 'success' && json.data) {
           if (!aiData) aiData = { ...json, data: [] };
           aiData.data = aiData.data.concat(json.data);
-          console.log(`[scraper] AI data: ${aiData.data.length}, hasMore: ${json.hasMore}`);
+          console.log(`[scraper] AI: ${aiData.data.length}, hasMore: ${json.hasMore}`);
         }
       }
     } catch (e) {}
   });
 
   try {
-    // Navigate to login
     console.log('[scraper] Navigating to login...');
-    await page.goto(`https://${domain}/auth/login`, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForTimeout(3000);
+    await page.goto(`https://${domain}/auth/login`, {
+      waitUntil: 'networkidle',
+      timeout: 60000,
+    });
 
-    // Debug info
-    console.log('[scraper] URL:', page.url());
-    console.log('[scraper] Title:', await page.title());
+    // Wait for React to render — up to 15 seconds
+    console.log('[scraper] Waiting for login form to render...');
+    await page.waitForFunction(() => {
+      const inputs = document.querySelectorAll('input');
+      return inputs.length > 0;
+    }, { timeout: 20000 });
 
-    // Log all inputs for debugging
+    await page.waitForTimeout(1000);
+
+    // Log what we found
     const inputs = await page.evaluate(() =>
       Array.from(document.querySelectorAll('input')).map(i => ({
-        type: i.type, name: i.name, id: i.id,
-        placeholder: i.placeholder, class: i.className.slice(0, 60)
+        type: i.type, name: i.name, id: i.id, placeholder: i.placeholder,
       }))
     );
-    console.log('[scraper] Inputs found:', JSON.stringify(inputs));
+    console.log('[scraper] Inputs:', JSON.stringify(inputs));
 
-    // Try all possible email selectors
-    const emailSel = await page.evaluate(() => {
-      const candidates = [
-        'input[type="email"]', 'input[name="email"]',
-        'input[placeholder*="email" i]', 'input#email',
-        'input[autocomplete="email"]', 'input[autocomplete="username"]',
-      ];
-      for (const s of candidates) {
-        if (document.querySelector(s)) return s;
-      }
-      // fallback: first visible text/email input
-      const all = document.querySelectorAll('input:not([type="hidden"])');
-      if (all.length > 0) return `input:nth-of-type(${Array.from(document.querySelectorAll('input')).indexOf(all[0]) + 1})`;
-      return null;
-    });
+    // Fill email
+    const emailInput = await page.$('input[type="email"]') ||
+      await page.$('input[name="email"]') ||
+      await page.$('input[placeholder*="email" i]') ||
+      await page.$('input[autocomplete="email"]') ||
+      await page.$('input[autocomplete="username"]') ||
+      (await page.$$('input'))[0];
 
-    console.log('[scraper] Email selector found:', emailSel);
-    if (!emailSel) throw new Error('No email input found on login page');
+    if (!emailInput) throw new Error('No input fields found after waiting');
+    await emailInput.fill(email);
+    console.log('[scraper] Filled email');
 
-    await page.fill(emailSel, email);
     await page.waitForTimeout(500);
 
-    const passSel = await page.evaluate(() => {
-      const candidates = [
-        'input[type="password"]', 'input[name="password"]',
-        'input[placeholder*="password" i]', 'input#password',
-      ];
-      for (const s of candidates) {
-        if (document.querySelector(s)) return s;
-      }
-      return null;
-    });
+    // Fill password
+    const passwordInput = await page.$('input[type="password"]') ||
+      await page.$('input[name="password"]') ||
+      await page.$('input[placeholder*="password" i]') ||
+      (await page.$$('input'))[1];
 
-    console.log('[scraper] Password selector found:', passSel);
-    if (!passSel) throw new Error('No password input found on login page');
+    if (!passwordInput) throw new Error('No password field found');
+    await passwordInput.fill(password);
+    console.log('[scraper] Filled password');
 
-    await page.fill(passSel, password);
     await page.waitForTimeout(500);
-    await page.keyboard.press('Enter');
-    console.log('[scraper] Submitted login form...');
 
-    // Wait for navigation after login
-    await page.waitForTimeout(8000);
-    console.log('[scraper] Post-login URL:', page.url());
+    // Click submit button or press Enter
+    const submitBtn = await page.$('button[type="submit"]') ||
+      await page.$('button:has-text("Sign in")') ||
+      await page.$('button:has-text("Login")') ||
+      await page.$('button:has-text("Log in")');
 
-    // Navigate to wallet billing page
-    console.log('[scraper] Loading wallet billing page...');
+    if (submitBtn) {
+      await submitBtn.click();
+      console.log('[scraper] Clicked submit button');
+    } else {
+      await page.keyboard.press('Enter');
+      console.log('[scraper] Pressed Enter to submit');
+    }
+
+    // Wait for post-login redirect
+    await page.waitForURL(`https://${domain}/**`, { timeout: 30000 });
+    await page.waitForTimeout(3000);
+    console.log('[scraper] Logged in. URL:', page.url());
+
+    // Wallet page
+    console.log('[scraper] Loading wallet page...');
     await page.goto(
       `https://${domain}/settings/billing?tab=wallet_transactions&sub_tab=subs`,
       { waitUntil: 'networkidle', timeout: 60000 }
     );
     await page.waitForTimeout(5000);
 
-    // Scroll to trigger pagination
     for (let i = 0; i < 15; i++) {
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
       await page.waitForTimeout(2000);
       if (walletData?.data?.length >= (walletData?.locationsCount || 99)) break;
     }
-    console.log('[scraper] Wallet done, total:', walletData?.data?.length);
+    console.log('[scraper] Wallet done:', walletData?.data?.length);
 
-    // Navigate to AI Suite page
+    // AI Suite page
     console.log('[scraper] Loading AI Suite page...');
     await page.goto(
       `https://${domain}/ai-suite?view=dashboard&usageProduct=AI_STUDIO&usageSortBy=createdAt&usageSortOrder=desc`,
       { waitUntil: 'networkidle', timeout: 60000 }
     );
     await page.waitForTimeout(5000);
-    console.log('[scraper] AI Suite done, total:', aiData?.data?.length);
+    console.log('[scraper] AI done:', aiData?.data?.length);
 
     cache.wallet = walletData;
     cache.ai = aiData;
@@ -167,13 +163,11 @@ async function getData() {
     console.log('[scraper] Returning cached data');
     return cache;
   }
-
   if (scraping) {
     return new Promise((resolve, reject) => {
       scrapeQueue.push({ resolve, reject });
     });
   }
-
   scraping = true;
   try {
     const result = await scrapeGHL();
