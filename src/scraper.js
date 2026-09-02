@@ -36,7 +36,6 @@ async function scrapeGHL() {
 
   const page = await context.newPage();
 
-  // Capture API responses in flight
   let walletData = null;
   let aiData = null;
 
@@ -46,7 +45,6 @@ async function scrapeGHL() {
       if (url.includes('blade-platform/warehouse/v2/location-usage-records')) {
         const json = await response.json();
         if (json.success && json.data) {
-          // Merge pages — collect all data
           if (!walletData) walletData = { ...json, data: [] };
           walletData.data = walletData.data.concat(json.data);
           console.log(`[scraper] Wallet data: ${walletData.data.length}/${json.locationsCount}`);
@@ -60,66 +58,101 @@ async function scrapeGHL() {
           console.log(`[scraper] AI data: ${aiData.data.length}, hasMore: ${json.hasMore}`);
         }
       }
-    } catch (e) {
-      // not JSON or other error — skip
-    }
+    } catch (e) {}
   });
 
   try {
-    // Step 1: Login
+    // Navigate to login
     console.log('[scraper] Navigating to login...');
-    await page.goto(`https://${domain}/auth/login`, { waitUntil: 'networkidle', timeout: 60000 });
+    await page.goto(`https://${domain}/auth/login`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(3000);
 
-    // Fill login form
-    await page.waitForSelector('input[type="email"], input[name="email"]', { timeout: 15000 });
-    await page.fill('input[type="email"], input[name="email"]', email);
-    await page.fill('input[type="password"], input[name="password"]', password);
+    // Debug info
+    console.log('[scraper] URL:', page.url());
+    console.log('[scraper] Title:', await page.title());
+
+    // Log all inputs for debugging
+    const inputs = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('input')).map(i => ({
+        type: i.type, name: i.name, id: i.id,
+        placeholder: i.placeholder, class: i.className.slice(0, 60)
+      }))
+    );
+    console.log('[scraper] Inputs found:', JSON.stringify(inputs));
+
+    // Try all possible email selectors
+    const emailSel = await page.evaluate(() => {
+      const candidates = [
+        'input[type="email"]', 'input[name="email"]',
+        'input[placeholder*="email" i]', 'input#email',
+        'input[autocomplete="email"]', 'input[autocomplete="username"]',
+      ];
+      for (const s of candidates) {
+        if (document.querySelector(s)) return s;
+      }
+      // fallback: first visible text/email input
+      const all = document.querySelectorAll('input:not([type="hidden"])');
+      if (all.length > 0) return `input:nth-of-type(${Array.from(document.querySelectorAll('input')).indexOf(all[0]) + 1})`;
+      return null;
+    });
+
+    console.log('[scraper] Email selector found:', emailSel);
+    if (!emailSel) throw new Error('No email input found on login page');
+
+    await page.fill(emailSel, email);
+    await page.waitForTimeout(500);
+
+    const passSel = await page.evaluate(() => {
+      const candidates = [
+        'input[type="password"]', 'input[name="password"]',
+        'input[placeholder*="password" i]', 'input#password',
+      ];
+      for (const s of candidates) {
+        if (document.querySelector(s)) return s;
+      }
+      return null;
+    });
+
+    console.log('[scraper] Password selector found:', passSel);
+    if (!passSel) throw new Error('No password input found on login page');
+
+    await page.fill(passSel, password);
+    await page.waitForTimeout(500);
     await page.keyboard.press('Enter');
     console.log('[scraper] Submitted login form...');
 
-    // Wait for dashboard to load
-    await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 60000 });
-    console.log('[scraper] Logged in, current URL:', page.url());
+    // Wait for navigation after login
+    await page.waitForTimeout(8000);
+    console.log('[scraper] Post-login URL:', page.url());
 
-    // Step 2: Navigate to wallet billing page
+    // Navigate to wallet billing page
     console.log('[scraper] Loading wallet billing page...');
     await page.goto(
       `https://${domain}/settings/billing?tab=wallet_transactions&sub_tab=subs`,
       { waitUntil: 'networkidle', timeout: 60000 }
     );
-    // Wait for data to load — scroll triggers pagination
     await page.waitForTimeout(5000);
 
-    // Trigger all pages by scrolling if needed
-    let prevCount = 0;
-    for (let i = 0; i < 20; i++) {
+    // Scroll to trigger pagination
+    for (let i = 0; i < 15; i++) {
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
       await page.waitForTimeout(2000);
-      const currentCount = walletData?.data?.length || 0;
-      if (currentCount === prevCount && currentCount > 0) break;
-      prevCount = currentCount;
+      if (walletData?.data?.length >= (walletData?.locationsCount || 99)) break;
     }
-
     console.log('[scraper] Wallet done, total:', walletData?.data?.length);
 
-    // Step 3: Navigate to AI Suite page
+    // Navigate to AI Suite page
     console.log('[scraper] Loading AI Suite page...');
-    const now = new Date();
-    const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-    const today = now.toISOString().split('T')[0];
-
     await page.goto(
       `https://${domain}/ai-suite?view=dashboard&usageProduct=AI_STUDIO&usageSortBy=createdAt&usageSortOrder=desc`,
       { waitUntil: 'networkidle', timeout: 60000 }
     );
     await page.waitForTimeout(5000);
-
     console.log('[scraper] AI Suite done, total:', aiData?.data?.length);
 
     cache.wallet = walletData;
     cache.ai = aiData;
     cache.lastScraped = Date.now();
-
     console.log('[scraper] Scrape complete ✓');
     return cache;
 
@@ -155,7 +188,6 @@ async function getData() {
   }
 }
 
-// Pre-warm cache on startup
 async function initialize() {
   try {
     console.log('[scraper] Pre-warming cache on startup...');
@@ -165,7 +197,6 @@ async function initialize() {
   }
 }
 
-// Schedule auto-refresh every 55 minutes
 function scheduleAutoRefresh() {
   setInterval(async () => {
     if (!isCacheFresh()) {
