@@ -32,6 +32,7 @@ async function loginAndGetToken() {
     origin: `https://${domain}`,
     referer: `https://${domain}/`,
     'user-agent': deviceName,
+    version: '2021-07-28',
   };
 
   // Step 1: email/password login — confirms identity
@@ -70,6 +71,7 @@ async function loginAndGetToken() {
       method: 'POST',
       headers: {
         ...headers,
+        version: '2021-07-28',
         ...(cookieHeader ? { cookie: cookieHeader } : {}),
       },
       body: JSON.stringify({
