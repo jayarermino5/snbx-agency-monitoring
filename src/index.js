@@ -1,7 +1,6 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { initialize, scheduleAutoRefresh } = require('./tokenManager');
 const walletRouter = require('./routes/wallet');
 const aiRouter = require('./routes/ai');
 
@@ -27,8 +26,6 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
-app.listen(PORT, async () => {
+app.listen(PORT, () => {
   console.log(`SNBX Billing API running on port ${PORT}`);
-  await initialize();
-  scheduleAutoRefresh();
 });
