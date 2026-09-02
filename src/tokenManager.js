@@ -11,63 +11,91 @@ function isTokenFresh() {
   return cachedToken && tokenFetchedAt && (Date.now() - tokenFetchedAt < TOKEN_TTL_MS);
 }
 
-function extractToken(data) {
-  const candidates = [
-    data?.access_token,
-    data?.token,
-    data?.authToken,
-    data?.idToken,
-    data?.id_token,
-    data?.jwt,
-    data?.data?.access_token,
-    data?.data?.token,
-    data?.data?.authToken,
-    data?.user?.token,
-    data?.user?.access_token,
-    data?.tokenData?.access_token,
-    data?.tokenData?.token,
-  ];
-  return candidates.find(t => t && typeof t === 'string' && t.startsWith('eyJ')) || null;
-}
-
 async function loginAndGetToken() {
   const email = process.env.GHL_EMAIL;
   const password = process.env.GHL_PASSWORD;
   const domain = process.env.GHL_DOMAIN || 'app.gohighlevel.com';
+  const subdomain = process.env.GHL_SUBDOMAIN || 'app';
+  const companyId = process.env.GHL_COMPANY_ID;
+  const deviceId = process.env.GHL_DEVICE_ID || 'c1108bc1-400c-49a0-9478-13d8c2314a3a';
+  // Any 3 location IDs from your agency — used to get agency-level token
+  const locationIds = process.env.GHL_LOCATION_IDS || 'FLZRGfeCUdQxcRE17Wl3,xI7jo1cy8HaLsOy7ML5I,fBmHS43QUr0H51dHbiqr';
 
   if (!email || !password) {
     throw new Error('GHL_EMAIL or GHL_PASSWORD not set in environment');
   }
 
-  console.log('[tokenManager] Attempting login via backend.leadconnectorhq.com/oauth/2/login/email...');
+  const deviceName = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
-  const r = await fetch('https://backend.leadconnectorhq.com/oauth/2/login/email', {
+  const headers = {
+    'Content-Type': 'application/json',
+    origin: `https://${domain}`,
+    referer: `https://${domain}/`,
+    'user-agent': deviceName,
+  };
+
+  // Step 1: email/password login — confirms identity
+  console.log('[tokenManager] Step 1: email login...');
+  const step1Res = await fetch('https://backend.leadconnectorhq.com/oauth/2/login/email', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      origin: `https://${domain}`,
-      referer: `https://${domain}/`,
-      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-    },
-    body: JSON.stringify({ email, password }),
+    headers,
+    body: JSON.stringify({
+      email,
+      password,
+      domain,
+      subdomain,
+      companyId,
+      deviceId,
+      deviceName,
+      deviceType: 'web',
+    }),
   });
 
-  const data = await r.json().catch(() => ({}));
-  console.log(`[tokenManager] Login response ${r.status}:`, JSON.stringify(data).slice(0, 300));
+  const step1Data = await step1Res.json().catch(() => ({}));
+  console.log(`[tokenManager] Step 1 response ${step1Res.status}:`, JSON.stringify(step1Data).slice(0, 200));
 
-  if (!r.ok) {
-    throw new Error(`Login failed ${r.status}: ${JSON.stringify(data)}`);
+  if (!step1Res.ok) {
+    throw new Error(`Step 1 failed ${step1Res.status}: ${JSON.stringify(step1Data)}`);
   }
 
-  const token = extractToken(data);
-  if (token) {
-    console.log('[tokenManager] Token extracted successfully');
+  // Capture cookies from step 1 for step 2
+  const setCookie = step1Res.headers.raw()['set-cookie'];
+  const cookieHeader = setCookie ? setCookie.map(c => c.split(';')[0]).join('; ') : '';
+
+  // Step 2: signin/refresh — returns the actual JWT
+  console.log('[tokenManager] Step 2: signin refresh...');
+  const step2Res = await fetch(
+    `https://backend.leadconnectorhq.com/oauth/2/login/signin/refresh?version=2&location_id=${locationIds}`,
+    {
+      method: 'POST',
+      headers: {
+        ...headers,
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      body: JSON.stringify({
+        email,
+        companyId,
+        deviceId,
+        deviceType: 'web',
+      }),
+    }
+  );
+
+  const step2Data = await step2Res.json().catch(() => ({}));
+  console.log(`[tokenManager] Step 2 response ${step2Res.status}:`, JSON.stringify(step2Data).slice(0, 200));
+
+  if (!step2Res.ok) {
+    throw new Error(`Step 2 failed ${step2Res.status}: ${JSON.stringify(step2Data)}`);
+  }
+
+  const token = step2Data?.token;
+  if (token && typeof token === 'string' && token.startsWith('eyJ')) {
+    console.log('[tokenManager] Token obtained successfully');
     return token;
   }
 
-  // Log full response so we can see exact structure
-  console.error('[tokenManager] Token not found in response. Full response:', JSON.stringify(data));
-  throw new Error('Login succeeded but no token found in response — check Railway logs for response structure');
+  console.error('[tokenManager] No token in step 2 response:', JSON.stringify(step2Data));
+  throw new Error('Step 2 returned no token — check Railway logs');
 }
 
 async function getToken() {
