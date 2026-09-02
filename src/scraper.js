@@ -1,4 +1,5 @@
 const { chromium } = require('playwright');
+const fs = require('fs');
 
 const CACHE_TTL_MS = 60 * 60 * 1000;
 
@@ -20,11 +21,28 @@ async function scrapeGHL() {
   console.log('[scraper] Launching browser...');
   const browser = await chromium.launch({
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-blink-features=AutomationControlled',
+    ],
   });
 
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    // Spoof webdriver flag
+    extraHTTPHeaders: {
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+  });
+
+  // Hide automation flags
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    window.chrome = { runtime: {} };
   });
 
   const page = await context.newPage();
@@ -55,55 +73,58 @@ async function scrapeGHL() {
 
   try {
     console.log('[scraper] Navigating to login...');
-    await page.goto(`https://${domain}/auth/login`, {
+    const response = await page.goto(`https://${domain}/auth/login`, {
       waitUntil: 'networkidle',
       timeout: 60000,
     });
 
-    // Wait for React to render — up to 15 seconds
-    console.log('[scraper] Waiting for login form to render...');
-    await page.waitForFunction(() => {
-      const inputs = document.querySelectorAll('input');
-      return inputs.length > 0;
-    }, { timeout: 20000 });
+    console.log('[scraper] HTTP status:', response?.status());
+    console.log('[scraper] URL:', page.url());
+    console.log('[scraper] Title:', await page.title());
 
-    await page.waitForTimeout(1000);
+    // Wait longer for JS to boot
+    await page.waitForTimeout(8000);
 
-    // Log what we found
+    // Get full page HTML snippet for debugging
+    const bodyHTML = await page.evaluate(() => document.body?.innerHTML?.slice(0, 500) || 'EMPTY');
+    console.log('[scraper] Body HTML snippet:', bodyHTML);
+
+    // Get all inputs
     const inputs = await page.evaluate(() =>
       Array.from(document.querySelectorAll('input')).map(i => ({
         type: i.type, name: i.name, id: i.id, placeholder: i.placeholder,
       }))
     );
-    console.log('[scraper] Inputs:', JSON.stringify(inputs));
+    console.log('[scraper] Inputs found:', JSON.stringify(inputs));
+
+    // Take screenshot and save to /tmp
+    await page.screenshot({ path: '/tmp/login-page.png', fullPage: true });
+    console.log('[scraper] Screenshot saved to /tmp/login-page.png');
+
+    if (inputs.length === 0) {
+      throw new Error('Page rendered no inputs — possible bot detection or blank page. Check HTML snippet in logs.');
+    }
 
     // Fill email
     const emailInput = await page.$('input[type="email"]') ||
       await page.$('input[name="email"]') ||
       await page.$('input[placeholder*="email" i]') ||
-      await page.$('input[autocomplete="email"]') ||
-      await page.$('input[autocomplete="username"]') ||
-      (await page.$$('input'))[0];
+      (await page.$$('input:not([type="hidden"])'))[0];
 
-    if (!emailInput) throw new Error('No input fields found after waiting');
+    if (!emailInput) throw new Error('No email input found');
     await emailInput.fill(email);
     console.log('[scraper] Filled email');
-
     await page.waitForTimeout(500);
 
-    // Fill password
     const passwordInput = await page.$('input[type="password"]') ||
       await page.$('input[name="password"]') ||
-      await page.$('input[placeholder*="password" i]') ||
-      (await page.$$('input'))[1];
+      (await page.$$('input:not([type="hidden"])'))[1];
 
-    if (!passwordInput) throw new Error('No password field found');
+    if (!passwordInput) throw new Error('No password input found');
     await passwordInput.fill(password);
     console.log('[scraper] Filled password');
-
     await page.waitForTimeout(500);
 
-    // Click submit button or press Enter
     const submitBtn = await page.$('button[type="submit"]') ||
       await page.$('button:has-text("Sign in")') ||
       await page.$('button:has-text("Login")') ||
@@ -111,13 +132,12 @@ async function scrapeGHL() {
 
     if (submitBtn) {
       await submitBtn.click();
-      console.log('[scraper] Clicked submit button');
+      console.log('[scraper] Clicked submit');
     } else {
       await page.keyboard.press('Enter');
-      console.log('[scraper] Pressed Enter to submit');
+      console.log('[scraper] Pressed Enter');
     }
 
-    // Wait for post-login redirect
     await page.waitForURL(`https://${domain}/**`, { timeout: 30000 });
     await page.waitForTimeout(3000);
     console.log('[scraper] Logged in. URL:', page.url());
