@@ -73,7 +73,7 @@ async function scrapeGHL() {
 
   try {
     console.log('[scraper] Navigating to login...');
-    const response = await page.goto(`https://${domain}/auth/login`, {
+    const response = await page.goto(`https://${domain}`, {
       waitUntil: 'networkidle',
       timeout: 60000,
     });
@@ -83,7 +83,7 @@ async function scrapeGHL() {
     console.log('[scraper] Title:', await page.title());
 
     // Wait longer for JS to boot
-    await page.waitForTimeout(8000);
+    await page.waitForTimeout(15000);
 
     // Get full page HTML snippet for debugging
     const bodyHTML = await page.evaluate(() => document.body?.innerHTML?.slice(0, 500) || 'EMPTY');
