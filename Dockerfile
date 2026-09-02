@@ -1,5 +1,5 @@
 # Official Playwright image — has all dependencies pre-installed
-FROM mcr.microsoft.com/playwright:v1.45.0-jammy
+FROM mcr.microsoft.com/playwright:v1.62.1-jammy
 
 WORKDIR /app
 
