@@ -1,5 +1,4 @@
 const { chromium } = require('playwright');
-const fs = require('fs');
 
 const CACHE_TTL_MS = 60 * 60 * 1000;
 
@@ -21,27 +20,16 @@ async function scrapeGHL() {
   console.log('[scraper] Launching browser...');
   const browser = await chromium.launch({
     headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-blink-features=AutomationControlled',
-    ],
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
   });
 
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-    // Spoof webdriver flag
-    extraHTTPHeaders: {
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
+    extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
   });
 
-  // Hide automation flags
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
     window.chrome = { runtime: {} };
   });
 
@@ -73,76 +61,46 @@ async function scrapeGHL() {
 
   try {
     console.log('[scraper] Navigating to login...');
-    const response = await page.goto(`https://${domain}`, {
+    await page.goto(`https://${domain}`, {
       waitUntil: 'networkidle',
       timeout: 60000,
     });
 
-    console.log('[scraper] HTTP status:', response?.status());
+    await page.waitForTimeout(3000);
     console.log('[scraper] URL:', page.url());
-    console.log('[scraper] Title:', await page.title());
 
-    // Wait longer for JS to boot
-    await page.waitForTimeout(15000);
-
-    // Get full page HTML snippet for debugging
-    const bodyHTML = await page.evaluate(() => document.body?.innerHTML?.slice(0, 500) || 'EMPTY');
-    console.log('[scraper] Body HTML snippet:', bodyHTML);
-
-    // Get all inputs
-    const inputs = await page.evaluate(() =>
-      Array.from(document.querySelectorAll('input')).map(i => ({
-        type: i.type, name: i.name, id: i.id, placeholder: i.placeholder,
-      }))
-    );
-    console.log('[scraper] Inputs found:', JSON.stringify(inputs));
-
-    // Take screenshot and save to /tmp
-    await page.screenshot({ path: '/tmp/login-page.png', fullPage: true });
-    console.log('[scraper] Screenshot saved to /tmp/login-page.png');
-
-    if (inputs.length === 0) {
-      throw new Error('Page rendered no inputs — possible bot detection or blank page. Check HTML snippet in logs.');
-    }
+    // Wait for the email input — we know the placeholder
+    await page.waitForSelector('input[placeholder="Your email address"]', { timeout: 15000 });
+    console.log('[scraper] Login form ready');
 
     // Fill email
-    const emailInput = await page.$('input[type="email"]') ||
-      await page.$('input[name="email"]') ||
-      await page.$('input[placeholder*="email" i]') ||
-      (await page.$$('input:not([type="hidden"])'))[0];
-
-    if (!emailInput) throw new Error('No email input found');
-    await emailInput.fill(email);
+    await page.fill('input[placeholder="Your email address"]', email);
     console.log('[scraper] Filled email');
     await page.waitForTimeout(500);
 
-    const passwordInput = await page.$('input[type="password"]') ||
-      await page.$('input[name="password"]') ||
-      (await page.$$('input:not([type="hidden"])'))[1];
-
-    if (!passwordInput) throw new Error('No password input found');
-    await passwordInput.fill(password);
+    // Fill password
+    await page.fill('input[placeholder="The password you picked"]', password);
     console.log('[scraper] Filled password');
     await page.waitForTimeout(500);
 
-    const submitBtn = await page.$('button[type="submit"]') ||
-      await page.$('button:has-text("Sign in")') ||
-      await page.$('button:has-text("Login")') ||
-      await page.$('button:has-text("Log in")');
+    // Click Sign in button
+    await page.click('button:has-text("Sign in")');
+    console.log('[scraper] Clicked Sign in');
 
-    if (submitBtn) {
-      await submitBtn.click();
-      console.log('[scraper] Clicked submit');
-    } else {
-      await page.keyboard.press('Enter');
-      console.log('[scraper] Pressed Enter');
+    // Wait for post-login — either redirect or dashboard load
+    await page.waitForTimeout(8000);
+    console.log('[scraper] Post-login URL:', page.url());
+
+    // Take screenshot to confirm login
+    await page.screenshot({ path: '/tmp/post-login.png', fullPage: false });
+
+    // Check if still on login page (failed login)
+    if (page.url().includes('auth/login') || page.url() === `https://${domain}/`) {
+      const errorText = await page.evaluate(() => document.body.innerText.slice(0, 300));
+      throw new Error(`Login may have failed. Page text: ${errorText}`);
     }
 
-    await page.waitForURL(`https://${domain}/**`, { timeout: 30000 });
-    await page.waitForTimeout(3000);
-    console.log('[scraper] Logged in. URL:', page.url());
-
-    // Wallet page
+    // Navigate to wallet billing page
     console.log('[scraper] Loading wallet page...');
     await page.goto(
       `https://${domain}/settings/billing?tab=wallet_transactions&sub_tab=subs`,
@@ -157,7 +115,7 @@ async function scrapeGHL() {
     }
     console.log('[scraper] Wallet done:', walletData?.data?.length);
 
-    // AI Suite page
+    // Navigate to AI Suite page
     console.log('[scraper] Loading AI Suite page...');
     await page.goto(
       `https://${domain}/ai-suite?view=dashboard&usageProduct=AI_STUDIO&usageSortBy=createdAt&usageSortOrder=desc`,
