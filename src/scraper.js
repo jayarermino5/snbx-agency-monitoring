@@ -188,9 +188,9 @@ async function scrapeGHL() {
     console.log('[scraper] Loading wallet page...');
     await page.goto(
       `https://${domain}/settings/billing?tab=wallet_transactions&sub_tab=subs`,
-      { waitUntil: 'networkidle', timeout: 60000 }
+      { waitUntil: 'domcontentloaded', timeout: 60000 }
     );
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(8000);
 
     for (let i = 0; i < 15; i++) {
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
@@ -201,12 +201,16 @@ async function scrapeGHL() {
 
     // AI Suite page
     console.log('[scraper] Loading AI Suite page...');
-    await page.goto(
-      `https://${domain}/ai-suite?view=dashboard&usageProduct=AI_STUDIO&usageSortBy=createdAt&usageSortOrder=desc`,
-      { waitUntil: 'networkidle', timeout: 60000 }
-    );
-    await page.waitForTimeout(5000);
-    console.log('[scraper] AI done:', aiData?.data?.length);
+    try {
+      await page.goto(
+        `https://${domain}/ai-suite?view=dashboard&usageProduct=AI_STUDIO&usageSortBy=createdAt&usageSortOrder=desc`,
+        { waitUntil: 'domcontentloaded', timeout: 60000 }
+      );
+      await page.waitForTimeout(8000);
+      console.log('[scraper] AI done:', aiData?.data?.length);
+    } catch (e) {
+      console.warn('[scraper] AI Suite page failed (non-fatal):', e.message);
+    }
 
     cache.wallet = walletData;
     cache.ai = aiData;
