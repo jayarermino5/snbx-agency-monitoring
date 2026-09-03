@@ -78,6 +78,13 @@ async function scrapeGHL() {
   let walletData = null;
   let aiData = null;
 
+  // Deduplicate by locationId
+  function mergeByLocationId(existing, incoming) {
+    const map = new Map((existing || []).map(l => [l.locationId, l]));
+    for (const loc of incoming) map.set(loc.locationId, loc);
+    return Array.from(map.values());
+  }
+
   page.on('response', async (response) => {
     const url = response.url();
     try {
@@ -85,7 +92,8 @@ async function scrapeGHL() {
         const json = await response.json();
         if (json.success && json.data) {
           if (!walletData) walletData = { ...json, data: [] };
-          walletData.data = walletData.data.concat(json.data);
+          walletData.data = mergeByLocationId(walletData.data, json.data);
+          walletData.locationsCount = json.locationsCount;
           console.log(`[scraper] Wallet: ${walletData.data.length}/${json.locationsCount}`);
         }
       }
@@ -93,7 +101,7 @@ async function scrapeGHL() {
         const json = await response.json();
         if (json.status === 'success' && json.data) {
           if (!aiData) aiData = { ...json, data: [] };
-          aiData.data = aiData.data.concat(json.data);
+          aiData.data = mergeByLocationId(aiData.data, json.data);
           console.log(`[scraper] AI: ${aiData.data.length}, hasMore: ${json.hasMore}`);
         }
       }
