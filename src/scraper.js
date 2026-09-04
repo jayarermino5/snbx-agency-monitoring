@@ -1,12 +1,13 @@
 const { chromium } = require('playwright');
+const fs = require('fs');
+const path = require('path');
 
-const CACHE_TTL_MS = 60 * 60 * 1000;
+const CACHE_TTL_MS = 55 * 60 * 1000;
+const SESSION_PATH = '/tmp/ghl-session.json';
 
 let cache = { wallet: null, ai: null, lastScraped: null };
 let scraping = false;
 let scrapeQueue = [];
-
-// OTP state — holds resolve/reject while waiting for user input
 let otpResolver = null;
 let otpRejecter = null;
 let awaitingOtp = false;
@@ -15,10 +16,9 @@ function isCacheFresh() {
   return cache.lastScraped && (Date.now() - cache.lastScraped) < CACHE_TTL_MS;
 }
 
-// Called by the /api/otp route when user submits the code
 function submitOtp(code) {
   if (otpResolver) {
-    console.log('[scraper] OTP received:', code);
+    console.log('[scraper] OTP received');
     awaitingOtp = false;
     otpResolver(code);
     otpResolver = null;
@@ -32,23 +32,49 @@ function isAwaitingOtp() {
   return awaitingOtp;
 }
 
-// Returns a promise that resolves when OTP is submitted via API
 function waitForOtp() {
   awaitingOtp = true;
   console.log('[scraper] Waiting for OTP from user...');
   return new Promise((resolve, reject) => {
     otpResolver = resolve;
     otpRejecter = reject;
-    // Timeout after 10 minutes
     setTimeout(() => {
       if (otpRejecter) {
         awaitingOtp = false;
-        otpRejecter(new Error('OTP timeout — no code submitted within 10 minutes'));
+        otpRejecter(new Error('OTP timeout'));
         otpResolver = null;
         otpRejecter = null;
       }
     }, 10 * 60 * 1000);
   });
+}
+
+function sessionExists() {
+  try {
+    return fs.existsSync(SESSION_PATH) &&
+      JSON.parse(fs.readFileSync(SESSION_PATH, 'utf8'))?.cookies?.length > 0;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function saveSession(context) {
+  try {
+    const storage = await context.storageState();
+    fs.writeFileSync(SESSION_PATH, JSON.stringify(storage));
+    console.log('[scraper] Session saved to', SESSION_PATH);
+  } catch (e) {
+    console.warn('[scraper] Failed to save session:', e.message);
+  }
+}
+
+function clearSession() {
+  try {
+    if (fs.existsSync(SESSION_PATH)) {
+      fs.unlinkSync(SESSION_PATH);
+      console.log('[scraper] Session cleared');
+    }
+  } catch (e) {}
 }
 
 async function scrapeGHL() {
@@ -64,10 +90,20 @@ async function scrapeGHL() {
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
   });
 
-  const context = await browser.newContext({
+  // Load saved session if available
+  const hasSavedSession = sessionExists();
+  console.log('[scraper] Saved session found:', hasSavedSession);
+
+  const contextOptions = {
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
     extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
-  });
+  };
+
+  if (hasSavedSession) {
+    contextOptions.storageState = SESSION_PATH;
+  }
+
+  const context = await browser.newContext(contextOptions);
 
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -78,7 +114,6 @@ async function scrapeGHL() {
   let walletData = null;
   let aiData = null;
 
-  // Deduplicate by locationId
   function mergeByLocationId(existing, incoming) {
     const map = new Map((existing || []).map(l => [l.locationId, l]));
     for (const loc of incoming) map.set(loc.locationId, loc);
@@ -109,88 +144,115 @@ async function scrapeGHL() {
   });
 
   try {
-    console.log('[scraper] Navigating to login...');
+    console.log('[scraper] Navigating to GHL...');
     await page.goto(`https://${domain}`, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(3000);
 
-    await page.waitForSelector('input[placeholder="Your email address"]', { timeout: 15000 });
-    console.log('[scraper] Login form ready');
+    const currentUrl = page.url();
+    console.log('[scraper] Current URL:', currentUrl);
 
-    await page.fill('input[placeholder="Your email address"]', email);
-    await page.waitForTimeout(500);
-    await page.fill('input[placeholder="The password you picked"]', password);
-    await page.waitForTimeout(500);
-    await page.click('button:has-text("Sign in")');
-    console.log('[scraper] Clicked Sign in');
+    // Check if already logged in via saved session
+    const isLoggedIn = !currentUrl.includes('login') &&
+      !currentUrl.includes('auth') &&
+      currentUrl !== `https://${domain}/`;
 
-    // Wait to see what happens next
-    await page.waitForTimeout(5000);
-    const postLoginUrl = page.url();
-    const pageText = await page.evaluate(() => document.body.innerText.slice(0, 200));
-    console.log('[scraper] Post-login URL:', postLoginUrl);
-    console.log('[scraper] Post-login text:', pageText.slice(0, 100));
+    if (!isLoggedIn) {
+      console.log('[scraper] Not logged in — starting login flow...');
 
-    // Check if OTP is required
-    const needsOtp = pageText.includes('Security Code') ||
-      pageText.includes('security code') ||
-      pageText.includes('OTP') ||
-      pageText.includes('Verify');
-
-    if (needsOtp) {
-      console.log('[scraper] OTP required — waiting for user to submit code via /api/otp');
-
-      // Wait for OTP from the API endpoint
-      const otp = await waitForOtp();
-
-      // Find OTP inputs — GHL uses individual digit boxes or a single input
-      const otpInputs = await page.$$('input[type="text"], input[type="number"], input[type="tel"]');
-      console.log('[scraper] OTP input count:', otpInputs.length);
-
-      if (otpInputs.length >= 4) {
-        // Individual digit boxes
-        const digits = otp.replace(/\D/g, '').split('');
-        for (let i = 0; i < Math.min(digits.length, otpInputs.length); i++) {
-          await otpInputs[i].fill(digits[i]);
-          await page.waitForTimeout(100);
-        }
-        console.log('[scraper] Filled OTP digits');
-      } else if (otpInputs.length === 1) {
-        await otpInputs[0].fill(otp);
-        console.log('[scraper] Filled OTP single input');
-      } else {
-        // Try typing into focused element
-        await page.keyboard.type(otp);
-        console.log('[scraper] Typed OTP via keyboard');
-      }
-
+      // Wait for login form
+      await page.waitForSelector('input[placeholder="Your email address"]', { timeout: 15000 });
+      await page.fill('input[placeholder="Your email address"]', email);
       await page.waitForTimeout(500);
-
-      // Click verify/confirm button
-      const verifyBtn = await page.$('button:has-text("Verify")') ||
-        await page.$('button:has-text("Confirm")') ||
-        await page.$('button:has-text("Submit")') ||
-        await page.$('button[type="submit"]');
-
-      if (verifyBtn) {
-        await verifyBtn.click();
-        console.log('[scraper] Clicked verify button');
-      } else {
-        await page.keyboard.press('Enter');
-        console.log('[scraper] Pressed Enter to verify');
-      }
+      await page.fill('input[placeholder="The password you picked"]', password);
+      await page.waitForTimeout(500);
+      await page.click('button:has-text("Sign in")');
+      console.log('[scraper] Clicked Sign in');
 
       await page.waitForTimeout(5000);
-      console.log('[scraper] Post-OTP URL:', page.url());
+      const postLoginUrl = page.url();
+      const pageText = await page.evaluate(() => document.body.innerText.slice(0, 300));
+      console.log('[scraper] Post-login URL:', postLoginUrl);
+
+      // Check if OTP needed
+      const needsOtp = pageText.includes('Security Code') ||
+        pageText.includes('security code') ||
+        pageText.includes('Verify') ||
+        pageText.includes('OTP');
+
+      if (needsOtp) {
+        console.log('[scraper] OTP required');
+
+        // Try to check "Trust this device" checkbox if present
+        try {
+          const trustCheckbox = await page.$('input[type="checkbox"]');
+          if (trustCheckbox) {
+            await trustCheckbox.check();
+            console.log('[scraper] Checked "Trust this device"');
+          }
+        } catch (e) {}
+
+        // Wait for OTP from user
+        const otp = await waitForOtp();
+
+        // Fill OTP — handle both digit boxes and single input
+        const otpInputs = await page.$$('input[type="text"], input[type="number"], input[type="tel"]');
+        console.log('[scraper] OTP inputs found:', otpInputs.length);
+
+        if (otpInputs.length >= 4) {
+          const digits = otp.replace(/\D/g, '').split('');
+          for (let i = 0; i < Math.min(digits.length, otpInputs.length); i++) {
+            await otpInputs[i].fill(digits[i]);
+            await page.waitForTimeout(100);
+          }
+        } else if (otpInputs.length === 1) {
+          await otpInputs[0].fill(otp);
+        } else {
+          await page.keyboard.type(otp);
+        }
+
+        await page.waitForTimeout(500);
+
+        // Try to check trust device again after OTP entry
+        try {
+          const trustCheckbox = await page.$('input[type="checkbox"]:not(:checked)');
+          if (trustCheckbox) {
+            await trustCheckbox.check();
+            console.log('[scraper] Checked trust device after OTP');
+          }
+        } catch (e) {}
+
+        // Submit OTP
+        const verifyBtn = await page.$('button:has-text("Verify")') ||
+          await page.$('button:has-text("Confirm")') ||
+          await page.$('button:has-text("Submit")') ||
+          await page.$('button[type="submit"]');
+
+        if (verifyBtn) {
+          await verifyBtn.click();
+        } else {
+          await page.keyboard.press('Enter');
+        }
+
+        await page.waitForTimeout(5000);
+        console.log('[scraper] Post-OTP URL:', page.url());
+      }
+
+      // Save session after successful login so we never need OTP again
+      await saveSession(context);
+      console.log('[scraper] Session saved — future scrapes will skip login');
+    } else {
+      console.log('[scraper] Using saved session — skipping login ✓');
+      // Refresh session file to keep it current
+      await saveSession(context);
     }
 
-    // Confirm we're logged in
+    // Verify we're actually logged in
     const finalUrl = page.url();
-    if (finalUrl.includes('auth') || finalUrl === `https://${domain}/`) {
-      const text = await page.evaluate(() => document.body.innerText.slice(0, 300));
-      throw new Error(`Still not logged in after OTP. URL: ${finalUrl}. Text: ${text}`);
+    if (finalUrl === `https://${domain}/` || finalUrl.includes('auth')) {
+      console.warn('[scraper] Session may be invalid — clearing and will retry next cycle');
+      clearSession();
+      throw new Error('Not logged in after session restore — session cleared, will re-login next cycle');
     }
-
-    console.log('[scraper] Logged in successfully ✓');
 
     // Wallet page
     console.log('[scraper] Loading wallet page...');
@@ -219,6 +281,9 @@ async function scrapeGHL() {
     } catch (e) {
       console.warn('[scraper] AI Suite page failed (non-fatal):', e.message);
     }
+
+    // Update session after full scrape
+    await saveSession(context);
 
     cache.wallet = walletData;
     cache.ai = aiData;
