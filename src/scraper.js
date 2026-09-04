@@ -137,6 +137,10 @@ async function scrapeGHL() {
         if (json.status === 'success' && json.data) {
           if (!aiData) aiData = { ...json, data: [] };
           aiData.data = mergeByLocationId(aiData.data, json.data);
+          // Log full structure of first record so we know field names
+          if (aiData.data.length > 0 && aiData.data.length <= json.data.length) {
+            console.log('[scraper] AI record sample:', JSON.stringify(aiData.data[0]).slice(0, 300));
+          }
           console.log(`[scraper] AI: ${aiData.data.length}, hasMore: ${json.hasMore}`);
         }
       }
@@ -273,7 +277,7 @@ async function scrapeGHL() {
     console.log('[scraper] Loading AI Suite page...');
     try {
       await page.goto(
-        `https://${domain}/ai-suite?view=dashboard&usageProduct=AI_STUDIO&usageSortBy=createdAt&usageSortOrder=desc`,
+        `https://${domain}/ai-suite?view=dashboard&usageSortBy=createdAt&usageSortOrder=desc&usageGroupBy=locationId`,
         { waitUntil: 'domcontentloaded', timeout: 60000 }
       );
       await page.waitForTimeout(8000);
