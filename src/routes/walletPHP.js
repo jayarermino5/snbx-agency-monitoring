@@ -160,7 +160,7 @@ router.post('/sync-usage', async (req, res) => {
       const usagePhp = usdToPhp(loc.totalUsageUsd || 0);
       await client.query(
         `INSERT INTO wallet_balances (location_id, location_name, total_topup_php, total_usage_usd, total_usage_php, balance_php, last_updated)
-         VALUES ($1, $2, 0, $3, $4, -$4, NOW())
+         VALUES ($1, $2, 0, $3, $4, (0 - $4::numeric), NOW())
          ON CONFLICT (location_id) DO UPDATE SET
            location_name = EXCLUDED.location_name,
            total_usage_usd = $3,
