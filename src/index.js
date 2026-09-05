@@ -95,6 +95,11 @@ async function syncUsageToDB(data) {
       locations.forEach(loc => { loc.totalUsageUsd += (aiMap[loc.locationId] || 0); });
     }
 
+    if (!locations.length) {
+      console.log('[sync] No locations to sync');
+      return;
+    }
+
     const fetch = require('node-fetch');
     const res = await fetch(`http://localhost:${PORT}/api/php/sync-usage`, {
       method: 'POST',
