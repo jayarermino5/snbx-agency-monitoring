@@ -273,17 +273,43 @@ async function scrapeGHL() {
     }
     console.log('[scraper] Wallet done:', walletData?.data?.length);
 
-    // AI Suite page
-    console.log('[scraper] Loading AI Suite page...');
+    // AI Suite — fetch API directly from browser context (avoids heavy page load)
+    console.log('[scraper] Fetching AI Suite data via API...');
     try {
-      await page.goto(
-        `https://${domain}/ai-suite?view=dashboard&usageSortBy=createdAt&usageSortOrder=desc&usageGroupBy=locationId`,
-        { waitUntil: 'domcontentloaded', timeout: 60000 }
-      );
-      await page.waitForTimeout(8000);
-      console.log('[scraper] AI done:', aiData?.data?.length);
+      const now = new Date();
+      const startDate = new Date(now.getFullYear(), now.getMonth() - 5, 1).toISOString().split('T')[0];
+      const endDate = now.toISOString().split('T')[0];
+      const companyId = process.env.GHL_COMPANY_ID;
+
+      let skip = 0;
+      const limit = 100;
+      aiData = { status: 'success', data: [] };
+
+      while (true) {
+        const apiUrl = `https://services.leadconnectorhq.com/ai-wrapper/usage/company/locations?companyId=${companyId}&startDate=${startDate}&endDate=${endDate}&skip=${skip}&limit=${limit}`;
+        const result = await page.evaluate(async (url) => {
+          const res = await fetch(url);
+          return res.json();
+        }, apiUrl);
+
+        if (result.status !== 'success' || !result.data) {
+          console.warn('[scraper] AI API returned:', JSON.stringify(result).slice(0, 200));
+          break;
+        }
+
+        const incoming = result.data;
+        const map = new Map(aiData.data.map(l => [l.locationId, l]));
+        for (const loc of incoming) map.set(loc.locationId, loc);
+        aiData.data = Array.from(map.values());
+
+        console.log(`[scraper] AI: ${aiData.data.length}, hasMore: ${result.hasMore}`);
+        if (!result.hasMore || incoming.length < limit) break;
+        skip += limit;
+      }
+
+      console.log('[scraper] AI done:', aiData.data.length);
     } catch (e) {
-      console.warn('[scraper] AI Suite page failed (non-fatal):', e.message);
+      console.warn('[scraper] AI Suite fetch failed (non-fatal):', e.message);
     }
 
     // Update session after full scrape
