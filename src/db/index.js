@@ -58,6 +58,9 @@ async function initDB() {
     // Migrations — add new columns if they don't exist
     await client.query(`
       ALTER TABLE wallet_topups ADD COLUMN IF NOT EXISTS month VARCHAR(7) DEFAULT TO_CHAR(NOW(), 'YYYY-MM');
+      ALTER TABLE monthly_ledger ADD COLUMN IF NOT EXISTS ai_is_free BOOLEAN DEFAULT FALSE;
+      ALTER TABLE wallet_balances ADD COLUMN IF NOT EXISTS current_month VARCHAR(7);
+      ALTER TABLE wallet_balances ADD COLUMN IF NOT EXISTS total_usage_usd NUMERIC(12,4) DEFAULT 0;
     `);
 
     console.log('[db] Tables initialized');
