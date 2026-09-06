@@ -61,6 +61,7 @@ async function initDB() {
       ALTER TABLE monthly_ledger ADD COLUMN IF NOT EXISTS ai_is_free BOOLEAN DEFAULT FALSE;
       ALTER TABLE wallet_balances ADD COLUMN IF NOT EXISTS current_month VARCHAR(7);
       ALTER TABLE wallet_balances ADD COLUMN IF NOT EXISTS total_usage_usd NUMERIC(12,4) DEFAULT 0;
+      ALTER TABLE wallet_balances ADD COLUMN IF NOT EXISTS current_balance_php NUMERIC(12,2) DEFAULT 0;
     `);
 
     console.log('[db] Tables initialized');
