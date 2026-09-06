@@ -63,6 +63,28 @@ app.post('/api/refresh', async (req, res) => {
 // PHP peso wallet routes
 app.use('/api/php', walletPHPRouter);
 
+// Clear saved session and force fresh login + OTP
+app.post('/api/debug/clear-session', (req, res) => {
+  const fs = require('fs');
+  const sessionPath = '/tmp/ghl-session.json';
+  try {
+    if (fs.existsSync(sessionPath)) {
+      fs.unlinkSync(sessionPath);
+      console.log('[debug] Session file cleared');
+    }
+    // Also bust scrape cache
+    const scraper = require('./scraper');
+    if (scraper.cache) scraper.cache.lastScraped = null;
+    res.json({ success: true, message: 'Session cleared — next scrape will trigger fresh login and OTP' });
+    // Trigger fresh scrape in background
+    setTimeout(() => {
+      getData().catch(e => console.error('[debug] Fresh scrape failed:', e.message));
+    }, 1000);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/debug/screenshot', (req, res) => {
   const fs = require('fs');
   const p = '/tmp/login-page.png';
