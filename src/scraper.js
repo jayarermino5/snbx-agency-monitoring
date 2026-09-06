@@ -87,7 +87,25 @@ async function scrapeGHL() {
   console.log('[scraper] Launching browser...');
   const browser = await chromium.launch({
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-zygote',
+      '--single-process',
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-default-apps',
+      '--disable-sync',
+      '--disable-translate',
+      '--hide-scrollbars',
+      '--metrics-recording-only',
+      '--mute-audio',
+      '--no-first-run',
+      '--safebrowsing-disable-auto-update',
+      '--js-flags=--max-old-space-size=256',
+    ],
   });
 
   // Load saved session if available
@@ -352,12 +370,24 @@ async function getData() {
 }
 
 async function initialize() {
-  try {
-    console.log('[scraper] Pre-warming cache on startup...');
-    await getData();
-  } catch (e) {
-    console.error('[scraper] Startup scrape failed:', e.message);
+  // Delay startup scrape by 10 seconds to let server fully boot
+  await new Promise(r => setTimeout(r, 10000));
+  let attempts = 0;
+  while (attempts < 3) {
+    try {
+      console.log('[scraper] Pre-warming cache on startup... attempt', attempts + 1);
+      await getData();
+      return;
+    } catch (e) {
+      attempts++;
+      console.error('[scraper] Startup scrape failed (attempt ' + attempts + '):', e.message);
+      if (attempts < 3) {
+        console.log('[scraper] Retrying in 30 seconds...');
+        await new Promise(r => setTimeout(r, 30000));
+      }
+    }
   }
+  console.error('[scraper] All startup attempts failed — will retry on next auto-refresh');
 }
 
 function scheduleAutoRefresh() {
