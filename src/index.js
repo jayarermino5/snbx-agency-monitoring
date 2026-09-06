@@ -83,17 +83,24 @@ app.use((err, req, res, next) => {
 async function syncUsageToDB(data) {
   if (!data?.wallet?.data?.length) return;
   try {
-    const locations = data.wallet.data.map(loc => {
-      const totalUsd = Object.values(loc.months || {})
-        .reduce((sum, m) => sum + (m.amount || 0), 0);
-      return { locationId: loc.locationId, locationName: loc.locationName, totalUsageUsd: totalUsd };
-    });
-
+    // Build AI usage per location per month
+    const aiMonthlyMap = {};
     if (data.ai?.data?.length) {
-      const aiMap = {};
-      data.ai.data.forEach(l => { aiMap[l.locationId] = l.totalGrossCharge || 0; });
-      locations.forEach(loc => { loc.totalUsageUsd += (aiMap[loc.locationId] || 0); });
+      // AI data has totalGrossCharge for the date range
+      // We attribute it to the current month since thats what was queried
+      const curMonth = new Date();
+      const monthKey = curMonth.getFullYear() + '-' + String(curMonth.getMonth() + 1).padStart(2, '0');
+      data.ai.data.forEach(l => {
+        aiMonthlyMap[l.locationId] = { [monthKey]: l.totalGrossCharge || 0 };
+      });
     }
+
+    const locations = data.wallet.data.map(loc => ({
+      locationId: loc.locationId,
+      locationName: loc.locationName,
+      months: loc.months || {},
+      aiUsageByMonth: aiMonthlyMap[loc.locationId] || {},
+    }));
 
     if (!locations.length) {
       console.log('[sync] No locations to sync');
