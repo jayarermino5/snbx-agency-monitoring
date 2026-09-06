@@ -55,6 +55,11 @@ async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_ledger_location_month ON monthly_ledger(location_id, month);
       CREATE INDEX IF NOT EXISTS idx_ledger_month ON monthly_ledger(month);
     `);
+    // Migrations — add new columns if they don't exist
+    await client.query(`
+      ALTER TABLE wallet_topups ADD COLUMN IF NOT EXISTS month VARCHAR(7) DEFAULT TO_CHAR(NOW(), 'YYYY-MM');
+    `);
+
     console.log('[db] Tables initialized');
   } finally {
     client.release();
