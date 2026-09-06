@@ -174,9 +174,12 @@ async function scrapeGHL() {
     console.log('[scraper] Current URL:', currentUrl);
 
     // Check if already logged in via saved session
-    const isLoggedIn = !currentUrl.includes('login') &&
-      !currentUrl.includes('auth') &&
-      currentUrl !== `https://${domain}/`;
+    // GHL can land on root domain after login so check page content too
+    const pageText = await page.evaluate(() => document.body?.innerText?.slice(0, 300) || '');
+    const isOnLoginPage = currentUrl.includes('/auth/') ||
+      pageText.includes('Sign into your account') ||
+      pageText.includes('Your email address');
+    const isLoggedIn = !isOnLoginPage;
 
     if (!isLoggedIn) {
       console.log('[scraper] Not logged in — starting login flow...');
@@ -268,13 +271,18 @@ async function scrapeGHL() {
       await saveSession(context);
     }
 
-    // Verify we're actually logged in
+    // Verify we're actually logged in by checking page content
     const finalUrl = page.url();
-    if (finalUrl === `https://${domain}/` || finalUrl.includes('auth')) {
-      console.warn('[scraper] Session may be invalid — clearing and will retry next cycle');
+    const pageContent = await page.evaluate(() => document.body?.innerText?.slice(0, 100) || '');
+    const isOnAuthPage = finalUrl.includes('/auth/') || 
+      pageContent.includes('Sign into your account') ||
+      pageContent.includes('Your email address');
+    if (isOnAuthPage) {
+      console.warn('[scraper] Still on auth page — clearing session and will retry');
       clearSession();
-      throw new Error('Not logged in after session restore — session cleared, will re-login next cycle');
+      throw new Error('Still on login page after auth — session cleared');
     }
+    console.log('[scraper] Login verified, URL:', finalUrl);
 
     // Wallet page
     console.log('[scraper] Loading wallet page...');
