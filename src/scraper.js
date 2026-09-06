@@ -306,7 +306,13 @@ async function scrapeGHL() {
       while (true) {
         const apiUrl = `https://services.leadconnectorhq.com/ai-wrapper/usage/company/locations?companyId=${companyId}&startDate=${startDate}&endDate=${endDate}&skip=${skip}&limit=${limit}`;
         const result = await page.evaluate(async (url) => {
-          const res = await fetch(url);
+          const res = await fetch(url, {
+            headers: {
+              'version': '2021-07-28',
+              'channel': 'APP',
+              'source': 'WEB_USER',
+            }
+          });
           return res.json();
         }, apiUrl);
 
