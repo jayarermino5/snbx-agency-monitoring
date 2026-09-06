@@ -290,12 +290,18 @@ async function scrapeGHL() {
       `https://${domain}/settings/billing?tab=wallet_transactions&sub_tab=subs`,
       { waitUntil: 'domcontentloaded', timeout: 60000 }
     );
-    await page.waitForTimeout(8000);
+    // Wait for initial data load
+    await page.waitForTimeout(10000);
+    console.log('[scraper] Wallet initial load done, captured so far:', walletData?.data?.length);
 
-    for (let i = 0; i < 15; i++) {
+    // Scroll to trigger pagination — keep scrolling until all loaded
+    for (let i = 0; i < 20; i++) {
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-      await page.waitForTimeout(2000);
-      if (walletData?.data?.length >= (walletData?.locationsCount || 99)) break;
+      await page.waitForTimeout(3000);
+      const count = walletData?.data?.length || 0;
+      const total = walletData?.locationsCount || 99;
+      console.log(`[scraper] Wallet scroll ${i+1}: ${count}/${total}`);
+      if (count >= total) break;
     }
     console.log('[scraper] Wallet done:', walletData?.data?.length);
 
@@ -314,11 +320,26 @@ async function scrapeGHL() {
       while (true) {
         const apiUrl = `https://services.leadconnectorhq.com/ai-wrapper/usage/company/locations?companyId=${companyId}&startDate=${startDate}&endDate=${endDate}&skip=${skip}&limit=${limit}`;
         const result = await page.evaluate(async (url) => {
+          // Get token-id from localStorage/sessionStorage if available
+          let tokenId = '';
+          try {
+            for (let i = 0; i < localStorage.length; i++) {
+              const key = localStorage.key(i);
+              const val = localStorage.getItem(key);
+              if (val && val.startsWith('eyJ') && val.length > 100) {
+                tokenId = val;
+                break;
+              }
+            }
+          } catch(e) {}
+
           const res = await fetch(url, {
             headers: {
               'version': '2021-07-28',
               'channel': 'APP',
               'source': 'WEB_USER',
+              'source-id': 'blade-platform',
+              ...(tokenId ? { 'token-id': tokenId } : {}),
             }
           });
           return res.json();
