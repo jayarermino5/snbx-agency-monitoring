@@ -6,11 +6,17 @@ const router = express.Router();
 const USD_TO_PHP = () => parseFloat(process.env.USD_TO_PHP_RATE || '58');
 const MARKUP = 1.5;
 
-// Months where AI Suite is free (no deduction)
-const AI_FREE_MONTHS = ['2026-08', '2026-07', '2026-06', '2026-05', '2026-04', '2026-03', '2026-02', '2026-01'];
+// Billing starts from September 2026 — nothing before this month is deducted
+const BILLING_START_MONTH = '2026-09';
+
+function isBillingMonth(month) {
+  // Only deduct from BILLING_START_MONTH onwards
+  return month >= BILLING_START_MONTH;
+}
 
 function isAiFree(month) {
-  return AI_FREE_MONTHS.includes(month);
+  // AI is free before billing start month
+  return month < BILLING_START_MONTH;
 }
 
 function usdToPhp(usd) {
@@ -41,9 +47,10 @@ async function recalculateLedger(client, locationId) {
     );
     const topupPhp = parseFloat(topupResult.rows[0].total);
 
-    // Calculate deduction
-    const walletDeduction = usdToPhp(parseFloat(row.wallet_usage_usd) || 0);
-    const aiDeduction = row.ai_is_free ? 0 : usdToPhp(parseFloat(row.ai_usage_usd) || 0);
+    // Calculate deduction — only for billing months (Sep 2026 onwards)
+    const billingActive = isBillingMonth(row.month);
+    const walletDeduction = billingActive ? usdToPhp(parseFloat(row.wallet_usage_usd) || 0) : 0;
+    const aiDeduction = (billingActive && !row.ai_is_free) ? usdToPhp(parseFloat(row.ai_usage_usd) || 0) : 0;
     const totalDeduction = parseFloat((walletDeduction + aiDeduction).toFixed(2));
 
     // Opening = previous closing, closing = opening + topup - deduction
@@ -257,6 +264,7 @@ router.post('/sync-usage', async (req, res) => {
       for (const [month, data] of Object.entries(months)) {
         const walletUsd = parseFloat(data.amount || 0);
         const aiUsd = parseFloat(loc.aiUsageByMonth?.[month] || 0);
+        // Mark as free if before billing start (wallet AND AI both free before Sep 2026)
         const aiFree = isAiFree(month);
 
         // Upsert ledger row
