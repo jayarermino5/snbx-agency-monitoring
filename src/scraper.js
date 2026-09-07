@@ -305,64 +305,100 @@ async function scrapeGHL() {
     }
     console.log('[scraper] Wallet done:', walletData?.data?.length);
 
-    // AI Suite — fetch API directly from browser context (avoids heavy page load)
-    console.log('[scraper] Fetching AI Suite data via API...');
+    // AI Suite — navigate to AI Suite page and intercept the API response
+    console.log('[scraper] Loading AI Suite page to capture data...');
     try {
-      const now = new Date();
-      const startDate = new Date(now.getFullYear(), now.getMonth() - 5, 1).toISOString().split('T')[0];
-      const endDate = now.toISOString().split('T')[0];
-      const companyId = process.env.GHL_COMPANY_ID;
-
-      let skip = 0;
-      const limit = 100;
+      // Reset aiData before navigation
       aiData = { status: 'success', data: [] };
 
-      while (true) {
-        const apiUrl = `https://services.leadconnectorhq.com/ai-wrapper/usage/company/locations?companyId=${companyId}&startDate=${startDate}&endDate=${endDate}&skip=${skip}&limit=${limit}`;
-        const result = await page.evaluate(async (url) => {
-          // Get token-id from localStorage/sessionStorage if available
-          let tokenId = '';
-          try {
-            for (let i = 0; i < localStorage.length; i++) {
-              const key = localStorage.key(i);
-              const val = localStorage.getItem(key);
-              if (val && val.startsWith('eyJ') && val.length > 100) {
-                tokenId = val;
-                break;
+      // Set up response interceptor before navigating
+      const aiResponsePromise = new Promise((resolve) => {
+        const handler = async (response) => {
+          const url = response.url();
+          if (url.includes('ai-wrapper/usage/company/locations')) {
+            try {
+              const json = await response.json();
+              if (json.status === 'success' && json.data) {
+                resolve({ json, response });
               }
-            }
-          } catch(e) {}
+            } catch(e) {}
+          }
+        };
+        page.on('response', handler);
+        // Timeout after 30s
+        setTimeout(() => resolve(null), 30000);
+      });
 
-          const res = await fetch(url, {
-            headers: {
+      await page.goto(
+        `https://${domain}/ai-suite?view=dashboard&usageSortBy=createdAt&usageSortOrder=desc&usageGroupBy=locationId`,
+        { waitUntil: 'domcontentloaded', timeout: 60000 }
+      );
+      await page.waitForTimeout(8000);
+
+      // Get request headers from the AI Suite XHR — intercept outgoing requests
+      let capturedTokenId = '';
+      let capturedAuth = '';
+
+      page.on('request', (request) => {
+        const url = request.url();
+        if (url.includes('ai-wrapper') || url.includes('blade-platform')) {
+          const headers = request.headers();
+          if (headers['token-id']) capturedTokenId = headers['token-id'];
+          if (headers['authorization']) capturedAuth = headers['authorization'];
+        }
+      });
+
+      // Trigger a click on the page to force data load
+      await page.evaluate(() => window.scrollTo(0, 300));
+      await page.waitForTimeout(5000);
+
+      console.log('[scraper] Captured token-id:', capturedTokenId ? 'yes' : 'no');
+      console.log('[scraper] Captured auth:', capturedAuth ? 'yes' : 'no');
+
+      // Now fetch all pages using captured credentials
+      if (capturedTokenId || capturedAuth) {
+        const now = new Date();
+        const startDate = new Date(now.getFullYear(), now.getMonth() - 5, 1).toISOString().split('T')[0];
+        const endDate = now.toISOString().split('T')[0];
+        const companyId = process.env.GHL_COMPANY_ID;
+
+        let skip = 0;
+        const limit = 100;
+
+        while (true) {
+          const apiUrl = `https://services.leadconnectorhq.com/ai-wrapper/usage/company/locations?companyId=${companyId}&startDate=${startDate}&endDate=${endDate}&skip=${skip}&limit=${limit}`;
+          const result = await page.evaluate(async ({ url, tokenId, auth }) => {
+            const headers = {
               'version': '2021-07-28',
               'channel': 'APP',
               'source': 'WEB_USER',
-              'source-id': 'blade-platform',
-              ...(tokenId ? { 'token-id': tokenId } : {}),
-            }
-          });
-          return res.json();
-        }, apiUrl);
+            };
+            if (tokenId) headers['token-id'] = tokenId;
+            if (auth) headers['authorization'] = auth;
+            const res = await fetch(url, { headers });
+            return res.json();
+          }, { url: apiUrl, tokenId: capturedTokenId, auth: capturedAuth });
 
-        if (result.status !== 'success' || !result.data) {
-          console.warn('[scraper] AI API returned:', JSON.stringify(result).slice(0, 200));
-          break;
+          if (result.status !== 'success' || !result.data) {
+            console.warn('[scraper] AI API returned:', JSON.stringify(result).slice(0, 200));
+            break;
+          }
+
+          const map = new Map(aiData.data.map(l => [l.locationId, l]));
+          for (const loc of result.data) map.set(loc.locationId, loc);
+          aiData.data = Array.from(map.values());
+
+          console.log(`[scraper] AI: ${aiData.data.length}, hasMore: ${result.hasMore}`);
+          if (!result.hasMore || result.data.length < limit) break;
+          skip += limit;
         }
-
-        const incoming = result.data;
-        const map = new Map(aiData.data.map(l => [l.locationId, l]));
-        for (const loc of incoming) map.set(loc.locationId, loc);
-        aiData.data = Array.from(map.values());
-
-        console.log(`[scraper] AI: ${aiData.data.length}, hasMore: ${result.hasMore}`);
-        if (!result.hasMore || incoming.length < limit) break;
-        skip += limit;
+      } else {
+        console.warn('[scraper] No auth tokens captured — AI data unavailable this cycle');
       }
 
       console.log('[scraper] AI done:', aiData.data.length);
     } catch (e) {
-      console.warn('[scraper] AI Suite fetch failed (non-fatal):', e.message);
+      console.warn('[scraper] AI Suite failed (non-fatal):', e.message);
     }
 
     // Update session after full scrape
