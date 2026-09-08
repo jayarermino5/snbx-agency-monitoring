@@ -5,7 +5,7 @@ const path = require('path');
 const CACHE_TTL_MS = 55 * 60 * 1000;
 const SESSION_PATH = '/tmp/ghl-session.json';
 
-let cache = { wallet: null, ai: null, lastScraped: null };
+const cache = { wallet: null, ai: null, lastScraped: null };
 let scraping = false;
 let scrapeQueue = [];
 let otpResolver = null;
@@ -475,4 +475,4 @@ function scheduleAutoRefresh() {
   }, 55 * 60 * 1000);
 }
 
-module.exports = { getData, initialize, scheduleAutoRefresh, submitOtp, isAwaitingOtp };
+module.exports = { getData, initialize, scheduleAutoRefresh, submitOtp, isAwaitingOtp, cache };
