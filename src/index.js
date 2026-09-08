@@ -105,29 +105,18 @@ app.use((err, req, res, next) => {
 async function syncUsageToDB(data) {
   if (!data?.wallet?.data?.length) return;
   try {
-    // Build AI usage per location per month
-    const aiMonthlyMap = {};
+    // Build AI usage map by locationId for current month
+    const aiMap = {};
     if (data.ai?.data?.length) {
-      // AI data has totalGrossCharge for the date range
-      // We attribute it to the current month since thats what was queried
-      const curMonth = new Date();
-      const monthKey = curMonth.getFullYear() + '-' + String(curMonth.getMonth() + 1).padStart(2, '0');
-      data.ai.data.forEach(l => {
-        aiMonthlyMap[l.locationId] = { [monthKey]: l.totalGrossCharge || 0 };
-      });
+      data.ai.data.forEach(l => { aiMap[l.locationId] = l.totalGrossCharge || 0; });
     }
 
     const locations = data.wallet.data.map(loc => ({
       locationId: loc.locationId,
       locationName: loc.locationName,
       months: loc.months || {},
-      aiUsageByMonth: aiMonthlyMap[loc.locationId] || {},
+      aiUsageThisMonth: aiMap[loc.locationId] || 0,
     }));
-
-    if (!locations.length) {
-      console.log('[sync] No locations to sync');
-      return;
-    }
 
     const fetch = require('node-fetch');
     const res = await fetch(`http://localhost:${PORT}/api/php/sync-usage`, {
@@ -136,7 +125,7 @@ async function syncUsageToDB(data) {
       body: JSON.stringify({ locations }),
     });
     const result = await res.json();
-    console.log('[sync] Usage synced:', result.synced, 'locations');
+    console.log('[sync] Usage synced:', result.synced, 'locations, billing active:', result.billingActive);
   } catch (e) {
     console.error('[sync] Failed:', e.message);
   }
