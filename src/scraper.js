@@ -329,8 +329,11 @@ async function scrapeGHL() {
         setTimeout(() => resolve(null), 30000);
       });
 
+      const aiNow = new Date();
+      const aiStart = new Date(aiNow.getFullYear(), aiNow.getMonth(), 1).toISOString().split('T')[0];
+      const aiEnd = aiNow.toISOString().split('T')[0];
       await page.goto(
-        `https://${domain}/ai-suite?view=dashboard&usageSortBy=createdAt&usageSortOrder=desc&usageGroupBy=locationId`,
+        `https://${domain}/ai-suite?view=dashboard&usageSortBy=createdAt&usageSortOrder=desc&usageGroupBy=locationId&startDate=${aiStart}&endDate=${aiEnd}`,
         { waitUntil: 'domcontentloaded', timeout: 60000 }
       );
       await page.waitForTimeout(8000);
@@ -358,7 +361,7 @@ async function scrapeGHL() {
       // Now fetch all pages using captured credentials
       if (capturedTokenId || capturedAuth) {
         const now = new Date();
-        const startDate = new Date(now.getFullYear(), now.getMonth() - 5, 1).toISOString().split('T')[0];
+        const startDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]; // current month only
         const endDate = now.toISOString().split('T')[0];
         const companyId = process.env.GHL_COMPANY_ID;
 
